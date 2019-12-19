@@ -15,6 +15,8 @@ class Trade(models.Model):
 
     created = models.DateTimeField(auto_now=True)
 
-    def __str__(self):
+    class Meta:
+        unique_together = ("exchange", "symbol", "amount", "price", "trade_time")
 
+    def __str__(self):
         return f"<Trade of {self.symbol} @ {self.exchange.name}>"

@@ -1,13 +1,19 @@
 import asyncio
+import os
+import logging
 from datetime import datetime
 from decimal import Decimal
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from django.conf import settings
 from django.core.management import BaseCommand
 from django.utils import timezone
 from django.utils.module_loading import import_string
 
 from exchange.models import Exchange, Symbol
 from trade.models import Trade
+
+logger = logging.getLogger("django")
 
 
 def ts_to_dt(ts):
@@ -18,13 +24,16 @@ def ts_to_dt(ts):
     return dt
 
 
-async def main(client, symbol, exchange, arg):
+async def main(client, symbol, exchange):
+
+    count_before_fetch = Trade.objects.filter(exchange=exchange, symbol=symbol).count()
+
     ticks = await client.ticks(symbol)
     _data = []
     for d in ticks["data"]:
         _data.extend(d["data"])
 
-    print(len(_data))
+    logger.info(f"client returned {len(_data)} records")
 
     _trade_objs = []
 
@@ -40,7 +49,12 @@ async def main(client, symbol, exchange, arg):
             amount=_amount,
             value=_price * _amount,
         ))
-    arg["arg"] = _trade_objs
+
+    Trade.objects.bulk_create(_trade_objs, ignore_conflicts=True)
+
+    count_after_fetch = Trade.objects.filter(exchange=exchange, symbol=symbol).count()
+
+    logger.info(f"after fetch, the number of trade ({symbol} @ {exchange}): {count_before_fetch} ==> {count_after_fetch}")
 
 
 class Command(BaseCommand):
@@ -78,7 +92,7 @@ class Command(BaseCommand):
         except Exchange.DoesNotExist:
             self.stdout.write(self.style.ERROR("Exchange Does Not Exist. ({})".format(str_ex)))
         else:
-            self.stdout.write(self.style.NOTICE(f"Start collecting trade of [{symbol} ON {ex}]"))
+            self.stdout.write(self.style.NOTICE(f"Starting collecting trade of [{symbol} ON {ex}]"))
 
             client_class = import_string(f"exchange.client.{ex.name.lower()}.{ex.name}")
 
@@ -86,9 +100,20 @@ class Command(BaseCommand):
 
             loop = asyncio.get_event_loop()
 
-            _arg = {
-                "arg": None
-            }
-            loop.run_until_complete(main(client, symbol, ex, _arg))
+            loop.run_until_complete(main(client, symbol, ex))
 
-            Trade.objects.bulk_create(_arg["arg"])
+            scheduler = AsyncIOScheduler()
+
+            scheduler.add_job(main, args=(client, symbol, ex), **settings.MARKET_CRAWLER_SCHEDULER_SETTINGS)
+
+            scheduler.start()
+
+            self.stdout.write(self.style.NOTICE(f"Started Crawler Scheduler "
+                                                f"With Settings: {settings.MARKET_CRAWLER_SCHEDULER_SETTINGS}"))
+
+            self.stdout.write(self.style.NOTICE(f"Press Ctrl+{'Break' if os.name == 'nt' else 'C'} to exit"))
+
+            try:
+                loop.run_forever()
+            except (KeyboardInterrupt, SystemExit):
+                self.stdout.write(self.style.NOTICE("Program Terminating..."))
