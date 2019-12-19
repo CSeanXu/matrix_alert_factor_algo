@@ -16,7 +16,7 @@ class SymbolFormatEnum(Enum):
 
 class Exchange(models.Model):
     name = models.CharField(max_length=2048)
-    description = models.CharField(max_length=10 ** 5, blank=True)
+    description = models.TextField(max_length=10 ** 5, blank=True)
     url = models.URLField(blank=True)
     symbol_format = models.CharField(
         max_length=128,
